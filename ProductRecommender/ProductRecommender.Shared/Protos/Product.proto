@@ -1,0 +1,39 @@
+﻿syntax = "proto3";
+
+option csharp_namespace = "ProductRecommender.Shared.Protos.GrpcProductService";
+package product;
+
+service ProductService {
+  rpc GetProductsByIds (GetProductsByIdsRequest) returns (GetProductsByIdsResponse);
+  rpc UpdateProductStock (UpdateProductStockRequest) returns (UpdateProductStockResponse);
+}
+
+message GetProductsByIdsRequest {
+  repeated string product_ids = 1;
+}
+
+message GetProductsByIdsResponse {
+  repeated ProductBrief products = 1;
+}
+
+message ProductBrief {
+  string id = 1;
+  string name = 2;
+  int64 price = 3;
+  int32 stock_quantity = 4;
+  repeated string image_urls = 5;
+  string shop_id = 6;
+}
+
+message UpdateProductStockRequest {
+  repeated StockUpdate updates = 1;
+}
+
+message StockUpdate {
+  string product_id = 1;
+  int32 quantity = 2;
+}
+
+message UpdateProductStockResponse {
+  bool success = 1;
+}
