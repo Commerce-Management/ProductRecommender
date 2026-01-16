@@ -5,6 +5,8 @@ package order;
 
 service OrderService {
   rpc GetAllUserOrders (GetAllUserOrderRequest) returns (GetAllUserOrderResponse);
+  rpc GetOrderStatusByProductIdAndUserId (GetOrderStatusByProductIdAndUserIdRequest) returns (GetOrderStatusByProductIdAndUserIdResponse);
+  rpc GetPurchasedProductIdsByUserId (GetPurchasedProductIdsByUserIdRequest) returns (GetPurchasedProductIdsByUserIdResponse);
 }
 
 message GetAllUserOrderRequest {
@@ -17,4 +19,22 @@ message OrderProduct {
 
 message GetAllUserOrderResponse {
   repeated OrderProduct items = 1;
+}
+
+message GetOrderStatusByProductIdAndUserIdRequest {
+  string product_id = 1;
+  string user_id = 2;
+}
+
+message GetOrderStatusByProductIdAndUserIdResponse {
+  bool exists = 1;
+  string status = 2;
+}
+
+message GetPurchasedProductIdsByUserIdRequest {
+  string user_id = 1;
+}
+
+message GetPurchasedProductIdsByUserIdResponse {
+  repeated string product_ids = 1;
 }
