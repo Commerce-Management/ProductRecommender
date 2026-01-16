@@ -25,7 +25,9 @@
     </ItemGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\ProductRecommender.Shared\ProductRecommender.Shared.csproj" />
+      <ProjectReference Include="..\ProductRecommender.Application\ProductRecommender.Application.csproj" />
+      <ProjectReference Include="..\ProductRecommender.Core\ProductRecommender.Core.csproj" />
+      <ProjectReference Include="..\ProductRecommender.Infrastructure\ProductRecommender.Infrastructure.csproj" />
     </ItemGroup>
 
 </Project>
