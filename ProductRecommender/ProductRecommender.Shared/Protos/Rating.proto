@@ -6,6 +6,7 @@ package rating;
 service RatingService {
   rpc GetReviewsByUserId (GetReviewsByUserIdRequest) returns (GetReviewsByUserIdResponse);
   rpc GetReviewsByUserIdAndRating (GetReviewsByUserIdAndRatingRequest) returns (GetReviewsByUserIdAndRatingResponse);
+  rpc GetActiveUsersForTraining (GetActiveUsersForTrainingRequest) returns (GetActiveUsersForTrainingResponse); // ← НОВЫЙ
 }
 
 message GetReviewsByUserIdRequest {
@@ -41,4 +42,14 @@ message ReviewBrief {
   repeated string image_urls = 7;
   bool is_anonymous = 8;
   string created_at = 9;
+}
+
+
+message GetActiveUsersForTrainingRequest {
+  int32 min_reviews = 1;      // минимум отзывов
+  int32 max_users = 2;         // максимум пользователей
+}
+
+message GetActiveUsersForTrainingResponse {
+  repeated string user_ids = 1;
 }
