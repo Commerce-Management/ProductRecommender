@@ -4,6 +4,6 @@ namespace ProductRecommender.Application;
 
 public interface IRecommendationService
 {
-    Task<IReadOnlyList<Guid>> GetRecommendationsForUserAsync(Guid userId, int limit, CancellationToken ct = default);
+    Task<IReadOnlyList<ProductRecommendationResult>> GetRecommendationsForUserAsync(Guid userId, int limit, CancellationToken ct = default);
     Task TrainModelAsync(CancellationToken ct = default);
 }

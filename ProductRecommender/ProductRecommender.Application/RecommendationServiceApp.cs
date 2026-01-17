@@ -1,6 +1,7 @@
 ﻿using ProductRecommender.Core.Entities;
 using ProductRecommender.Infrastructure.Interfaces;
 using ProductRecommender.Shared.Protos.GrpcRatingService;
+using ProductRecommender.Shared.Protos.GrpcProductService;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -9,109 +10,283 @@ namespace ProductRecommender.Application;
 public class RecommendationServiceApp : IRecommendationService
 {
     private readonly RatingService.RatingServiceClient _ratingClient;
+    private readonly ProductService.ProductServiceClient _productClient;
     private readonly IProductRecommenderModel _model;
     private readonly IConfiguration _config;
     private readonly ILogger<RecommendationServiceApp> _logger;
+    private readonly RecommendationWeights _weights;
 
-    public RecommendationServiceApp(RatingService.RatingServiceClient ratingClient,
-                                    IProductRecommenderModel model,
-                                    IConfiguration config,
-                                    ILogger<RecommendationServiceApp> logger)
+    public RecommendationServiceApp(
+        RatingService.RatingServiceClient ratingClient,
+        ProductService.ProductServiceClient productClient,
+        IProductRecommenderModel model,
+        IConfiguration config,
+        ILogger<RecommendationServiceApp> logger)
     {
         _ratingClient = ratingClient;
+        _productClient = productClient;
         _model = model;
         _config = config;
         _logger = logger;
+        
+        _weights = new RecommendationWeights
+        {
+            MlWeight = config.GetValue<double>("Recommendation:MlWeight", 0.6),
+            RatingWeight = config.GetValue<double>("Recommendation:RatingWeight", 0.25),
+            PopularityWeight = config.GetValue<double>("Recommendation:PopularityWeight", 0.15)
+        };
     }
 
-    // Обучение — собираем отзывы по seed users (из конфигурации)
+    /// <summary>
+    /// Автоматическое обучение модели на активных пользователях
+    /// </summary>
     public async Task TrainModelAsync(CancellationToken ct = default)
     {
-        var seed = _config["Training:SeedUserIds"];
-        if (string.IsNullOrWhiteSpace(seed))
+        _logger.LogInformation("=== STARTING AUTOMATIC MODEL TRAINING ===");
+
+        // Параметры обучения из конфига
+        var minReviews = _config.GetValue<int>("Training:MinReviews", 5);
+        var maxUsers = _config.GetValue<int>("Training:MaxUsers", 500);
+        var minTotalSamples = _config.GetValue<int>("Training:MinTotalSamples", 100);
+
+        _logger.LogInformation("Training parameters: minReviews={MinReviews}, maxUsers={MaxUsers}", 
+            minReviews, maxUsers);
+
+        try
         {
-            _logger.LogWarning("No seed users specified in Training:SeedUserIds. Skipping training.");
-            return;
+            // 1. Получаем активных пользователей из RatingService
+            var activeUsersRequest = new GetActiveUsersForTrainingRequest
+            {
+                MinReviews = minReviews,
+                MaxUsers = maxUsers
+            };
+
+            var activeUsersResponse = await _ratingClient.GetActiveUsersForTrainingAsync(
+                activeUsersRequest, 
+                cancellationToken: ct);
+
+            if (!activeUsersResponse.UserIds.Any())
+            {
+                _logger.LogWarning("❌ No active users found for training");
+                return;
+            }
+
+            _logger.LogInformation("✅ Found {Count} active users for training", 
+                activeUsersResponse.UserIds.Count);
+
+            // 2. Собираем отзывы от всех активных пользователей
+            var trainingData = new List<ProductRatingEntry>();
+            var successfulUsers = 0;
+
+            foreach (var userIdString in activeUsersResponse.UserIds)
+            {
+                if (!Guid.TryParse(userIdString, out var userId))
+                    continue;
+
+                try
+                {
+                    var reviewsRequest = new GetReviewsByUserIdRequest
+                    {
+                        UserId = userId.ToString(),
+                        Page = 1,
+                        PageSize = 1000
+                    };
+
+                    var reviewsResponse = await _ratingClient.GetReviewsByUserIdAsync(
+                        reviewsRequest, 
+                        cancellationToken: ct);
+
+                    if (reviewsResponse.Reviews.Any())
+                    {
+                        successfulUsers++;
+                        
+                        foreach (var review in reviewsResponse.Reviews)
+                        {
+                            trainingData.Add(new ProductRatingEntry
+                            {
+                                UserId = review.UserId,
+                                ProductId = review.ProductId,
+                                Label = review.Rating
+                            });
+                        }
+
+                        if (successfulUsers % 10 == 0)
+                        {
+                            _logger.LogInformation("  Progress: {Users} users, {Samples} samples", 
+                                successfulUsers, trainingData.Count);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to get reviews for user {UserId}", userId);
+                }
+            }
+
+            // 3. Проверяем достаточность данных
+            if (trainingData.Count < minTotalSamples)
+            {
+                _logger.LogWarning(
+                    "❌ Not enough training data: {Count} samples (minimum: {Min})", 
+                    trainingData.Count, 
+                    minTotalSamples);
+                return;
+            }
+
+            var uniqueUsers = trainingData.Select(d => d.UserId).Distinct().Count();
+            var uniqueProducts = trainingData.Select(d => d.ProductId).Distinct().Count();
+
+            _logger.LogInformation("📊 Training data collected:");
+            _logger.LogInformation("   Total samples: {Samples}", trainingData.Count);
+            _logger.LogInformation("   Unique users: {Users}", uniqueUsers);
+            _logger.LogInformation("   Unique products: {Products}", uniqueProducts);
+            _logger.LogInformation("   Avg samples per user: {Avg:F1}", 
+                (double)trainingData.Count / uniqueUsers);
+
+            // 4. Обучаем модель
+            _logger.LogInformation("🧠 Training Matrix Factorization model...");
+            await _model.TrainAsync(trainingData, ct);
+
+            _logger.LogInformation("✅ MODEL TRAINING COMPLETED SUCCESSFULLY!");
+            _logger.LogInformation("===========================================");
         }
-
-        var userIds = seed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(s => s.Trim())
-            .Where(s => Guid.TryParse(s, out _))
-            .Select(Guid.Parse)
-            .ToList();
-
-        if (!userIds.Any())
+        catch (Exception ex)
         {
-            _logger.LogWarning("No valid GUIDs in Training:SeedUserIds. Skipping training.");
-            return;
+            _logger.LogError(ex, "❌ Training failed");
+            throw;
         }
+    }
 
-        var training = new List<ProductRatingEntry>();
+    public async Task<IReadOnlyList<ProductRecommendationResult>> GetRecommendationsForUserAsync(
+        Guid userId, 
+        int limit, 
+        CancellationToken ct = default)
+    {
+        _logger.LogInformation("🎯 Getting recommendations for user {UserId}, limit={Limit}", userId, limit);
 
-        foreach (var userId in userIds)
+        try
         {
-            var req = new GetReviewsByUserIdRequest
+            // Проверяем, обучена ли модель
+            if (!_model.IsModelTrained())
+            {
+                _logger.LogWarning("⚠️ Model not trained. Triggering automatic training...");
+                await TrainModelAsync(ct);
+                
+                if (!_model.IsModelTrained())
+                {
+                    _logger.LogWarning("⚠️ Training failed or insufficient data. Returning empty recommendations.");
+                    return Array.Empty<ProductRecommendationResult>();
+                }
+            }
+
+            // Получаем отзывы пользователя
+            var reviewsRequest = new GetReviewsByUserIdRequest
             {
                 UserId = userId.ToString(),
                 Page = 1,
                 PageSize = 1000
             };
 
-            var resp = await _ratingClient.GetReviewsByUserIdAsync(req);
-            foreach (var r in resp.Reviews)
+            var reviewsResponse = await _ratingClient.GetReviewsByUserIdAsync(reviewsRequest, cancellationToken: ct);
+            var userReviews = reviewsResponse.Reviews;
+
+            _logger.LogInformation("📝 User has {Count} reviews", userReviews.Count);
+
+            if (!userReviews.Any())
             {
-                // normalize rating to 0..1 or keep 1..5, choose one convention.
-                var label = r.Rating; // here we keep 1..5
-                training.Add(new ProductRatingEntry
-                {
-                    UserId = r.UserId,
-                    ProductId = r.ProductId,
-                    Label = label
-                });
+                _logger.LogWarning("⚠️ User has no reviews. Cannot generate personalized recommendations.");
+                return Array.Empty<ProductRecommendationResult>();
             }
-        }
 
-        if (!training.Any())
+            // Получаем candidate list
+            var productIdsFromReviews = userReviews.Select(r => r.ProductId).ToList();
+
+            var candidateRequest = new GetCandidateProductIdsByProdIdsFromReviewsRequest
+            {
+                UserId = userId.ToString()
+            };
+            candidateRequest.ProductIdsFromReviews.AddRange(productIdsFromReviews);
+
+            var candidateResponse = await _productClient.GetCandidateProductIdsByProdIdsFromReviewsAsync(
+                candidateRequest, 
+                cancellationToken: ct);
+
+            _logger.LogInformation("🎲 Received {Count} candidate products", candidateResponse.ProductIdsCandidate.Count);
+
+            if (!candidateResponse.ProductIdsCandidate.Any())
+            {
+                _logger.LogWarning("⚠️ No candidate products found");
+                return Array.Empty<ProductRecommendationResult>();
+            }
+
+            var candidateProductIds = candidateResponse.ProductIdsCandidate
+                .Where(id => Guid.TryParse(id, out _))
+                .Select(Guid.Parse)
+                .ToList();
+
+            // Предсказываем ML скоры
+            _logger.LogInformation("🧠 Predicting ML scores for {Count} products...", candidateProductIds.Count);
+
+            var predictions = candidateProductIds
+                .Select(productId => new
+                {
+                    ProductId = productId,
+                    MlScore = _model.PredictScore(userId, productId)
+                })
+                .ToList();
+
+            // Нормализуем ML скоры (0-1)
+            var maxMlScore = predictions.Max(p => p.MlScore);
+            var minMlScore = predictions.Min(p => p.MlScore);
+            var mlRange = maxMlScore - minMlScore;
+
+            var normalizedPredictions = predictions.Select(p => new
+            {
+                p.ProductId,
+                p.MlScore,
+                NormalizedMlScore = mlRange > 0 
+                    ? (p.MlScore - minMlScore) / mlRange 
+                    : 0.5
+            }).ToList();
+
+            // Гибридный скор
+            var recommendations = normalizedPredictions
+                .Select(p => new ProductRecommendationResult
+                {
+                    ProductId = p.ProductId,
+                    UserId = userId,
+                    MlScore = p.NormalizedMlScore,
+                    RatingScore = 0.5,
+                    PopularityScore = 0.5,
+                    Score = CalculateHybridScore(p.NormalizedMlScore, 0.5, 0.5)
+                })
+                .OrderByDescending(r => r.Score)
+                .Take(limit)
+                .ToList();
+
+            _logger.LogInformation("✅ Generated {Count} recommendations", recommendations.Count);
+            
+            if (recommendations.Any())
+            {
+                _logger.LogInformation("   Top: ProductId={ProductId}, Score={Score:F4} (ML={MlScore:F4})",
+                    recommendations.First().ProductId,
+                    recommendations.First().Score,
+                    recommendations.First().MlScore);
+            }
+
+            return recommendations;
+        }
+        catch (Exception ex)
         {
-            _logger.LogWarning("No training data collected from RatingService.");
-            return;
+            _logger.LogError(ex, "❌ Failed to generate recommendations for user {UserId}", userId);
+            throw;
         }
-
-        await _model.TrainAsync(training, ct);
-        _logger.LogInformation("Model training finished. Samples: {Count}", training.Count);
     }
 
-    // Рекомендации для пользователя (простой: берем кандидатов из его собственных rated products)
-    public async Task<IReadOnlyList<Guid>> GetRecommendationsForUserAsync(Guid userId, int limit, CancellationToken ct = default)
+    private double CalculateHybridScore(double mlScore, double ratingScore, double popularityScore)
     {
-        var request = new GetReviewsByUserIdRequest
-        {
-            UserId = userId.ToString(),
-            Page = 1,
-            PageSize = 1000
-        };
-
-        var response = await _ratingClient.GetReviewsByUserIdAsync(request);
-        var userReviews = response.Reviews;
-
-        var ratedProductIds = userReviews
-            .Select(r => Guid.Parse(r.ProductId))
-            .ToHashSet();
-
-        // Кандидаты — для теста: те же продукты + (опционально) расширить список
-        var candidateProducts = ratedProductIds.ToList();
-
-        var scored = candidateProducts
-            .Select(pid => new
-            {
-                ProductId = pid,
-                Score = _model.PredictScore(userId, pid)
-            })
-            .OrderByDescending(x => x.Score)
-            .Take(limit)
-            .Select(x => x.ProductId)
-            .ToList();
-
-        return scored;
+        return (mlScore * _weights.MlWeight) +
+               (ratingScore * _weights.RatingWeight) +
+               (popularityScore * _weights.PopularityWeight);
     }
 }
