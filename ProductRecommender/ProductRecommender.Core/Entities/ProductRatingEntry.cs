@@ -2,7 +2,7 @@
 
 public class ProductRatingEntry
 {
-    public float UserId { get; set; }
-    public float ProductId { get; set; }
-    public float Label { get; set; }   // my Rating from ProductReview
+    public string UserId { get; set; } = string.Empty;
+    public string ProductId { get; set; } = string.Empty;
+    public float Label { get; set; }  // Rating 1-5
 }
