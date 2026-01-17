@@ -8,24 +8,48 @@ namespace ProductRecommender.Api;
 public class RecommendationsController : ControllerBase
 {
     private readonly IRecommendationService _recommendationService;
+    private readonly ILogger<RecommendationsController> _logger;
 
-    public RecommendationsController(IRecommendationService recommendationService)
+    public RecommendationsController(
+        IRecommendationService recommendationService,
+        ILogger<RecommendationsController> logger)
     {
         _recommendationService = recommendationService;
+        _logger = logger;
     }
 
+    /// <summary>
+    /// Получить персонализированные рекомендации для пользователя
+    /// </summary>
     [HttpGet("{userId:guid}")]
-    public async Task<IActionResult> GetUserRecommendations(Guid userId, [FromQuery] int limit = 10, CancellationToken ct = default)
+    public async Task<IActionResult> GetUserRecommendations(
+        Guid userId, 
+        [FromQuery] int limit = 10, 
+        CancellationToken ct = default)
     {
-        var items = await _recommendationService.GetRecommendationsForUserAsync(userId, limit, ct);
-        return Ok(items);
+        _logger.LogInformation("Request: recommendations for {UserId}, limit={Limit}", userId, limit);
+        
+        var recommendations = await _recommendationService.GetRecommendationsForUserAsync(userId, limit, ct);
+        
+        return Ok(new 
+        { 
+            userId, 
+            limit, 
+            count = recommendations.Count,
+            recommendations 
+        });
     }
 
-    // endpoint для ручного триггера обучения (для начала)
+    /// <summary>
+    /// Обучить модель на исторических данных
+    /// </summary>
     [HttpPost("train")]
     public async Task<IActionResult> Train(CancellationToken ct = default)
     {
+        _logger.LogInformation("Manual training triggered");
+        
         await _recommendationService.TrainModelAsync(ct);
-        return Ok();
+        
+        return Ok(new { message = "Training completed successfully" });
     }
 }
