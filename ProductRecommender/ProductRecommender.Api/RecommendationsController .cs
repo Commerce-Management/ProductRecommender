@@ -18,9 +18,7 @@ public class RecommendationsController : ControllerBase
         _logger = logger;
     }
 
-    /// <summary>
-    /// Получить персонализированные рекомендации для пользователя
-    /// </summary>
+
     [HttpGet("{userId:guid}")]
     public async Task<IActionResult> GetUserRecommendations(
         Guid userId, 
@@ -40,9 +38,7 @@ public class RecommendationsController : ControllerBase
         });
     }
 
-    /// <summary>
-    /// Обучить модель на исторических данных
-    /// </summary>
+ 
     [HttpPost("train")]
     public async Task<IActionResult> Train(CancellationToken ct = default)
     {
